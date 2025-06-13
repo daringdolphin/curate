@@ -1,4 +1,9 @@
 ---
+description: 
+globs: 
+alwaysApply: true
+---
+---
 description: Follow these rules for all requests.
 globs: 
 ---
