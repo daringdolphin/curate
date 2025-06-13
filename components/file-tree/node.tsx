@@ -1,12 +1,10 @@
 "use client"
 
-import { useCallback, useState, useEffect } from "react"
+import { useCallback } from "react"
 import { FileMeta, OVERSIZE_LIMIT_BYTES, TOKEN_CAPS } from "@/types"
 import { useAppStore } from "@/state/atoms"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Badge } from "@/components/ui/badge"
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { FileText, FileImage, AlertTriangle, Loader2, Clock } from "lucide-react"
+import { FileText, Clock, AlertTriangle, Hash } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 
@@ -26,41 +24,33 @@ export function FileTreeNode({ file, onFileClick }: FileTreeNodeProps) {
   const isSelected = fileSelectionState.selectedFiles.has(file.id)
   const isOversize = file.size > OVERSIZE_LIMIT_BYTES
   const tokens = file.tokens || 0
-  const isProcessing = tokens === 0 && file.size > 0 && !isOversize // File has content but no tokens means it's still processing
-  const isImageOnly = tokens === 0 && file.size > 0 && !isProcessing // File has content but no tokens and not processing means it's image-only or error
+  const isProcessing = tokens === 0 && file.size > 0 && !isOversize
+  const isImageOnly = tokens === 0 && file.size > 0 && !isProcessing
+  const isSelectable = tokens > 0 && !isOversize && !isImageOnly
 
   // Get file type icon
   const getFileIcon = () => {
     if (isProcessing) {
-      return <Clock className="h-4 w-4 text-muted-foreground animate-pulse" />
+      return <Clock className="h-4 w-4 text-amber-500 animate-pulse" />
     }
     
-    if (isImageOnly && file.mimeType === "application/pdf") {
-      return <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+    if (isOversize || isImageOnly) {
+      return <AlertTriangle className="h-4 w-4 text-red-500" />
     }
     
     if (file.mimeType === "application/pdf") {
-      return <FileText className="h-4 w-4 text-red-500" />
+      return <FileText className="h-4 w-4 text-red-600" />
     }
     
     if (file.mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
-      return <FileText className="h-4 w-4 text-blue-500" />
+      return <FileText className="h-4 w-4 text-blue-600" />
     }
     
     if (file.mimeType === "application/vnd.google-apps.document") {
-      return <FileText className="h-4 w-4 text-blue-500" />
+      return <FileText className="h-4 w-4 text-blue-600" />
     }
     
-    return <FileText className="h-4 w-4 text-muted-foreground" />
-  }
-
-  // Format file size
-  const formatFileSize = (bytes: number) => {
-    if (bytes === 0) return "0 Bytes"
-    const k = 1024
-    const sizes = ["Bytes", "KB", "MB", "GB"]
-    const i = Math.floor(Math.log(bytes) / Math.log(k))
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i]
+    return <FileText className="h-4 w-4 text-slate-600" />
   }
 
   // Format token count
@@ -128,67 +118,27 @@ export function FileTreeNode({ file, onFileClick }: FileTreeNodeProps) {
     setTokenState
   ])
 
-  // Get badges for the file
-  const getBadges = () => {
-    const badges = []
-    
-    if (isOversize) {
-      badges.push(
-        <Badge key="oversize" variant="destructive" className="text-xs">
-          Oversize
-        </Badge>
-      )
-    }
-    
-    if (isProcessing) {
-      badges.push(
-        <Badge key="processing" variant="secondary" className="text-xs text-muted-foreground">
-          Processing...
-        </Badge>
-      )
-    }
-    
-    if (isImageOnly && file.mimeType === "application/pdf") {
-      badges.push(
-        <TooltipProvider key="image-only">
-          <Tooltip>
-            <TooltipTrigger>
-              <Badge variant="secondary" className="text-xs text-muted-foreground">
-                Image-only
-              </Badge>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>This PDF contains only images and no extractable text</p>
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      )
-    }
-    
-    return badges
-  }
-
   // Handle file click for preview
   const handleFileClick = useCallback(() => {
-    if (onFileClick && !isOversize && !isImageOnly && !isProcessing) {
+    if (onFileClick && isSelectable) {
       onFileClick(file)
     }
-  }, [onFileClick, file, isOversize, isImageOnly, isProcessing])
+  }, [onFileClick, file, isSelectable])
 
   return (
     <div className={cn(
-      "flex items-center gap-3 p-3 hover:bg-muted/50 transition-colors",
+      "flex items-center gap-3 py-2 px-2 hover:bg-muted/50 transition-colors rounded-sm",
       isSelected && "bg-muted",
-      (isImageOnly || isProcessing) && "opacity-60",
-      onFileClick && !isOversize && !isImageOnly && !isProcessing && "cursor-pointer"
+      !isSelectable && "opacity-60",
+      onFileClick && isSelectable && "cursor-pointer"
     )}>
       {/* Checkbox */}
       <Checkbox
         checked={isSelected}
         onCheckedChange={handleSelectionChange}
-        disabled={isOversize || isImageOnly || isProcessing}
-        className="shrink-0"
-        onClick={(e) => e.stopPropagation()} // Prevent triggering file click when clicking checkbox
+        disabled={!isSelectable}
+        className="shrink-0 h-4 w-4"
+        onClick={(e) => e.stopPropagation()}
       />
       
       {/* File icon */}
@@ -196,30 +146,38 @@ export function FileTreeNode({ file, onFileClick }: FileTreeNodeProps) {
         {getFileIcon()}
       </div>
       
-      {/* File info - clickable for preview */}
+      {/* File name and token count */}
       <div 
-        className="flex-1 min-w-0"
+        className="flex-1 min-w-0 flex items-center justify-between"
         onClick={handleFileClick}
       >
-        <div className="flex items-center gap-2 mb-1">
-          <span className="font-medium truncate">{file.name}</span>
-          <div className="flex gap-1">
-            {getBadges()}
-          </div>
-        </div>
+        <span className="font-medium truncate text-sm pr-2">
+          {file.name}
+        </span>
         
-        <div className="flex items-center gap-4 text-xs text-muted-foreground">
-          <span>{formatFileSize(file.size)}</span>
-          {tokens > 0 && (
-            <span>{formatTokenCount(tokens)} tokens</span>
-          )}
-          {isProcessing && (
-            <span className="text-muted-foreground">Processing...</span>
-          )}
-          {file.parentPath && (
-            <span className="truncate">{file.parentPath}</span>
-          )}
-        </div>
+        {/* Token count with icon */}
+        {tokens > 0 && (
+          <div className="flex items-center gap-1 text-xs text-muted-foreground bg-muted px-2 py-1 rounded shrink-0">
+            <Hash className="h-3 w-3" />
+            {formatTokenCount(tokens)}
+          </div>
+        )}
+        
+        {/* Processing state */}
+        {isProcessing && (
+          <div className="flex items-center gap-1 text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded shrink-0">
+            <Clock className="h-3 w-3" />
+            Processing
+          </div>
+        )}
+        
+        {/* Error states */}
+        {(isOversize || isImageOnly) && (
+          <div className="flex items-center gap-1 text-xs text-red-600 bg-red-50 px-2 py-1 rounded shrink-0">
+            <AlertTriangle className="h-3 w-3" />
+            {isOversize ? "Oversize" : "No text"}
+          </div>
+        )}
       </div>
     </div>
   )

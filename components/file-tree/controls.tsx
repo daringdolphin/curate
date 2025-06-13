@@ -3,7 +3,6 @@
 import { useCallback, useState, useEffect } from "react"
 import { FileMeta, OVERSIZE_LIMIT_BYTES } from "@/types"
 import { useAppStore } from "@/state/atoms"
-import { useTokenizer } from "@/hooks/use-tokenizer"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -19,15 +18,13 @@ export function Controls({ files, className = "" }: ControlsProps) {
   const { 
     fileSelectionState, 
     setFileSelectionState, 
+    tokenState,
+    setTokenState,
+    contentState,
+    setContentState,
     uiPrefsState, 
     setUIPrefsState
   } = useAppStore()
-
-  const { 
-    tokenCounts, 
-    checkTokenLimits, 
-    clearAll 
-  } = useTokenizer()
 
   const [searchInput, setSearchInput] = useState(uiPrefsState.searchQuery)
 
@@ -45,6 +42,27 @@ export function Controls({ files, className = "" }: ControlsProps) {
     return () => clearTimeout(timer)
   }, [searchInput, uiPrefsState, setUIPrefsState])
 
+  // Check if adding tokens would exceed limits
+  const checkTokenLimits = useCallback((additionalTokens: number) => {
+    const potentialTotal = tokenState.totalTokens + additionalTokens
+    
+    if (potentialTotal > tokenState.hardCap) {
+      return {
+        canAdd: false,
+        exceedsHardCap: true,
+        exceedsSoftCap: potentialTotal > tokenState.softCap,
+        potentialTotal
+      }
+    }
+
+    return {
+      canAdd: true,
+      exceedsHardCap: false,
+      exceedsSoftCap: potentialTotal > tokenState.softCap,
+      potentialTotal
+    }
+  }, [tokenState])
+
   // Get selectable files (not oversize, not errored)
   const selectableFiles = files.filter(file => 
     file.size <= OVERSIZE_LIMIT_BYTES && // Not oversize
@@ -58,15 +76,17 @@ export function Controls({ files, className = "" }: ControlsProps) {
   // Handle select all
   const handleSelectAll = useCallback(() => {
     const newSelectedFiles = new Set<string>()
-    let runningTotal = 0
+    const newTokenCounts = new Map(tokenState.tokenCounts)
+    let runningTotal = tokenState.totalTokens
 
     // Add all selectable files that fit within token limits
     for (const file of selectableFiles) {
-      const tokens = tokenCounts.get(file.id) || 0
+      const tokens = file.tokens || 0
       const limitCheck = checkTokenLimits(tokens)
       
-      if (limitCheck.canAdd && runningTotal + tokens <= 1000000) { // Hard cap check
+      if (limitCheck.canAdd && runningTotal + tokens <= tokenState.hardCap) {
         newSelectedFiles.add(file.id)
+        newTokenCounts.set(file.id, tokens)
         runningTotal += tokens
       } else {
         if (newSelectedFiles.size > 0) {
@@ -80,7 +100,13 @@ export function Controls({ files, className = "" }: ControlsProps) {
       ...fileSelectionState,
       selectedFiles: newSelectedFiles
     })
-  }, [selectableFiles, fileSelectionState, setFileSelectionState, tokenCounts, checkTokenLimits])
+
+    setTokenState({
+      ...tokenState,
+      tokenCounts: newTokenCounts,
+      totalTokens: runningTotal
+    })
+  }, [selectableFiles, fileSelectionState, setFileSelectionState, tokenState, setTokenState, checkTokenLimits])
 
   // Handle clear all
   const handleClearAll = useCallback(() => {
@@ -88,8 +114,18 @@ export function Controls({ files, className = "" }: ControlsProps) {
       ...fileSelectionState,
       selectedFiles: new Set()
     })
-    clearAll()
-  }, [fileSelectionState, setFileSelectionState, clearAll])
+    
+    // Clear token and content state
+    setTokenState({
+      ...tokenState,
+      tokenCounts: new Map(),
+      totalTokens: 0
+    })
+    
+    setContentState({
+      contentCache: new Map()
+    })
+  }, [fileSelectionState, setFileSelectionState, tokenState, setTokenState, contentState, setContentState])
 
   // Handle sort change
   const handleSortChange = useCallback((value: string) => {

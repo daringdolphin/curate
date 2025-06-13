@@ -4,7 +4,7 @@ import { memo, useMemo, useCallback, useState } from "react"
 import { FileMeta } from "@/types"
 import { useAppStore } from "@/state/atoms"
 import { FileTreeNode } from "./node"
-import { ChevronDown, ChevronRight, Folder, FolderOpen } from "lucide-react"
+import { ChevronDown, ChevronRight, Folder, FolderOpen, CheckSquare, Square } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Button } from "@/components/ui/button"
 
@@ -23,7 +23,7 @@ interface TreeNode {
 }
 
 export function FileTree({ files, className = "", onFileClick }: FileTreeProps) {
-  const { fileSelectionState, setFileSelectionState, uiPrefsState } = useAppStore()
+  const { fileSelectionState, setFileSelectionState, tokenState, setTokenState } = useAppStore()
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set())
 
   // Build hierarchical tree structure from flat file list
@@ -36,11 +36,9 @@ export function FileTree({ files, className = "", onFileClick }: FileTreeProps) 
     }
 
     files.forEach(file => {
-      // Split the path into parts
       const pathParts = file.parentPath ? file.parentPath.split('/').filter(Boolean) : []
       let currentNode = root
 
-      // Navigate/create folder structure
       pathParts.forEach(part => {
         let existingChild = currentNode.children.find(
           child => child.name === part && child.type === 'folder'
@@ -59,7 +57,6 @@ export function FileTree({ files, className = "", onFileClick }: FileTreeProps) 
         currentNode = existingChild
       })
 
-      // Add the file
       currentNode.children.push({
         name: file.name,
         path: file.parentPath ? `${file.parentPath}/${file.name}` : file.name,
@@ -69,20 +66,15 @@ export function FileTree({ files, className = "", onFileClick }: FileTreeProps) 
       })
     })
 
-    // Sort function
     const sortNodes = (nodes: TreeNode[]) => {
       return nodes.sort((a, b) => {
-        // Folders first
         if (a.type !== b.type) {
-          return a.type === 'folder' ? -1 : 1
+          return a.type === 'file' ? -1 : 1
         }
-        
-        // Then by name
         return a.name.localeCompare(b.name)
       })
     }
 
-    // Recursively sort all nodes
     const sortTree = (node: TreeNode) => {
       node.children = sortNodes(node.children)
       node.children.forEach(sortTree)
@@ -105,7 +97,6 @@ export function FileTree({ files, className = "", onFileClick }: FileTreeProps) 
   }, [])
 
   const handleFolderSelection = useCallback((folderPath: string, checked: boolean) => {
-    // Get all files in this folder (recursively)
     const getFilesInFolder = (nodes: TreeNode[], targetPath: string): FileMeta[] => {
       const result: FileMeta[] = []
       
@@ -123,12 +114,15 @@ export function FileTree({ files, className = "", onFileClick }: FileTreeProps) 
 
     const filesInFolder = getFilesInFolder(treeData, folderPath)
     const newSelectedFiles = new Set(fileSelectionState.selectedFiles)
+    const newTokenCounts = new Map(tokenState.tokenCounts)
 
     filesInFolder.forEach(file => {
       if (checked) {
         newSelectedFiles.add(file.id)
+        newTokenCounts.set(file.id, file.tokens || 0)
       } else {
         newSelectedFiles.delete(file.id)
+        newTokenCounts.delete(file.id)
       }
     })
 
@@ -136,14 +130,56 @@ export function FileTree({ files, className = "", onFileClick }: FileTreeProps) 
       ...fileSelectionState,
       selectedFiles: newSelectedFiles
     })
-  }, [treeData, fileSelectionState, setFileSelectionState])
+
+    setTokenState({
+      ...tokenState,
+      tokenCounts: newTokenCounts,
+      totalTokens: Array.from(newTokenCounts.values()).reduce((sum, count) => sum + count, 0)
+    })
+  }, [treeData, fileSelectionState, setFileSelectionState, tokenState, setTokenState])
+
+  // Select all functionality
+  const handleSelectAll = useCallback(() => {
+    const allFiles = files.filter(file => file.tokens && file.tokens > 0) // Only selectable files
+    const newSelectedFiles = new Set<string>()
+    const newTokenCounts = new Map<string, number>()
+
+    allFiles.forEach(file => {
+      newSelectedFiles.add(file.id)
+      newTokenCounts.set(file.id, file.tokens || 0)
+    })
+
+    setFileSelectionState({
+      ...fileSelectionState,
+      selectedFiles: newSelectedFiles
+    })
+
+    setTokenState({
+      ...tokenState,
+      tokenCounts: newTokenCounts,
+      totalTokens: Array.from(newTokenCounts.values()).reduce((sum, count) => sum + count, 0)
+    })
+  }, [files, fileSelectionState, setFileSelectionState, tokenState, setTokenState])
+
+  // Deselect all functionality
+  const handleDeselectAll = useCallback(() => {
+    setFileSelectionState({
+      ...fileSelectionState,
+      selectedFiles: new Set()
+    })
+
+    setTokenState({
+      ...tokenState,
+      tokenCounts: new Map(),
+      totalTokens: 0
+    })
+  }, [fileSelectionState, setFileSelectionState, tokenState, setTokenState])
 
   const renderTreeNode = useCallback((node: TreeNode, depth: number = 0) => {
     const isExpanded = expandedFolders.has(node.path)
-    const paddingLeft = depth * 16
+    const paddingLeft = depth * 12
 
     if (node.type === 'folder') {
-      // Count selected files in this folder
       const getFilesInFolder = (n: TreeNode): FileMeta[] => {
         const result: FileMeta[] = []
         for (const child of n.children) {
@@ -156,24 +192,25 @@ export function FileTree({ files, className = "", onFileClick }: FileTreeProps) 
       }
 
       const filesInFolder = getFilesInFolder(node)
-      const selectedFilesInFolder = filesInFolder.filter(f => 
+      const selectableFilesInFolder = filesInFolder.filter(f => f.tokens && f.tokens > 0)
+      const selectedFilesInFolder = selectableFilesInFolder.filter(f => 
         fileSelectionState.selectedFiles.has(f.id)
       )
       const isPartiallySelected = selectedFilesInFolder.length > 0 && 
-        selectedFilesInFolder.length < filesInFolder.length
-      const isAllSelected = filesInFolder.length > 0 && 
-        selectedFilesInFolder.length === filesInFolder.length
+        selectedFilesInFolder.length < selectableFilesInFolder.length
+      const isAllSelected = selectableFilesInFolder.length > 0 && 
+        selectedFilesInFolder.length === selectableFilesInFolder.length
 
       return (
         <div key={node.path}>
           <div 
-            className="flex items-center gap-1 py-1 px-2 hover:bg-muted/50 cursor-pointer group"
-            style={{ paddingLeft: `${paddingLeft + 8}px` }}
+            className="flex items-center gap-2 py-1.5 px-2 hover:bg-muted/50 cursor-pointer group rounded-sm"
+            style={{ paddingLeft: `${paddingLeft + 4}px` }}
           >
             <Button
               variant="ghost"
               size="sm"
-              className="h-4 w-4 p-0"
+              className="h-4 w-4 p-0 hover:bg-transparent"
               onClick={() => toggleFolder(node.path)}
             >
               {isExpanded ? (
@@ -198,18 +235,18 @@ export function FileTree({ files, className = "", onFileClick }: FileTreeProps) 
             />
             
             {isExpanded ? (
-              <FolderOpen className="h-4 w-4 text-blue-500" />
+              <FolderOpen className="h-4 w-4 text-blue-600" />
             ) : (
-              <Folder className="h-4 w-4 text-blue-500" />
+              <Folder className="h-4 w-4 text-blue-600" />
             )}
             
-            <span className="text-sm flex-1" onClick={() => toggleFolder(node.path)}>
+            <span className="text-sm font-medium flex-1" onClick={() => toggleFolder(node.path)}>
               {node.name}
             </span>
             
-            {filesInFolder.length > 0 && (
-              <span className="text-xs text-muted-foreground">
-                {selectedFilesInFolder.length}/{filesInFolder.length}
+            {selectableFilesInFolder.length > 0 && (
+              <span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+                {selectedFilesInFolder.length}/{selectableFilesInFolder.length}
               </span>
             )}
           </div>
@@ -222,11 +259,10 @@ export function FileTree({ files, className = "", onFileClick }: FileTreeProps) 
         </div>
       )
     } else {
-      // File node
       return (
         <div 
           key={node.path}
-          style={{ paddingLeft: `${paddingLeft + 8}px` }}
+          style={{ paddingLeft: `${paddingLeft + 4}px` }}
         >
           <FileTreeNode file={node.file!} onFileClick={onFileClick} />
         </div>
@@ -242,9 +278,43 @@ export function FileTree({ files, className = "", onFileClick }: FileTreeProps) 
     )
   }
 
+  const selectableFiles = files.filter(file => file.tokens && file.tokens > 0)
+  const selectedCount = fileSelectionState.selectedFiles.size
+  const allSelected = selectedCount === selectableFiles.length && selectableFiles.length > 0
+
   return (
-    <div className={`overflow-auto ${className}`}>
-      {treeData.map(node => renderTreeNode(node))}
+    <div className={`${className}`}>
+      {/* Select All / Deselect All Controls */}
+      <div className="flex gap-2 p-3 border-b bg-muted/20">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleSelectAll}
+          disabled={selectableFiles.length === 0 || allSelected}
+          className="flex items-center gap-2 h-8"
+        >
+          <CheckSquare className="h-3 w-3" />
+          Select All
+        </Button>
+        
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleDeselectAll}
+          disabled={selectedCount === 0}
+          className="flex items-center gap-2 h-8"
+        >
+          <Square className="h-3 w-3" />
+          Deselect All
+        </Button>
+
+        
+      </div>
+
+      {/* File Tree */}
+      <div className="overflow-auto">
+        {treeData.map(node => renderTreeNode(node))}
+      </div>
     </div>
   )
 } 
