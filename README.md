@@ -38,7 +38,6 @@ A browser-based tool that gives human experts precise, manual control over what 
   - [Supabase](https://supabase.com/)
   - [Drizzle](https://orm.drizzle.team/docs/get-started-postgresql)
   - [Server Actions](https://nextjs.org/docs/app/building-your-application/data-fetching/server-actions-and-mutations)
-- **Auth**: [Clerk](https://clerk.com/)
 - **Payments**: [Stripe](https://stripe.com/)
 - **Analytics**: [PostHog](https://posthog.com/)
 
@@ -55,10 +54,6 @@ A browser-based tool that gives human experts precise, manual control over what 
    NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
    NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
    SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
-   
-   # Clerk
-   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key
-   CLERK_SECRET_KEY=your_clerk_secret_key
    
    # Stripe
    STRIPE_SECRET_KEY=your_stripe_secret_key

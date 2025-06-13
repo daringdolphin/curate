@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server"
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
   const folderId = searchParams.get("folderId")
+  const folderName = searchParams.get("folderName")
   const accessToken = request.headers.get("Authorization")?.replace("Bearer ", "")
 
   if (!folderId) {
@@ -24,19 +25,21 @@ export async function GET(request: NextRequest) {
     const readableStream = new ReadableStream({
       async start(controller) {
         try {
-          const { files, error } = await scanFolderAction(folderId, accessToken)
+          const result = await scanFolderAction(folderId, accessToken, folderName || undefined)
 
-          if (error) {
-            controller.enqueue(new TextEncoder().encode(JSON.stringify({ error })))
+          if (!result.isSuccess) {
+            controller.enqueue(new TextEncoder().encode(JSON.stringify({ error: result.message })))
             controller.close()
             return
           }
 
-          for (const file of files) {
-            controller.enqueue(new TextEncoder().encode(JSON.stringify(file) + "\n"))
+          for (const file of result.data) {
+            const fileJson = JSON.stringify(file) + "\n"
+            controller.enqueue(new TextEncoder().encode(fileJson))
           }
           controller.close()
         } catch (e: any) {
+          console.error("Scan stream error:", e)
           controller.enqueue(new TextEncoder().encode(JSON.stringify({ error: e.message })))
           controller.close()
         }
@@ -50,6 +53,7 @@ export async function GET(request: NextRequest) {
       }
     })
   } catch (error: any) {
+    console.error("Scan API error:", error)
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 } 

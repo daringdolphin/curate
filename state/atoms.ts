@@ -20,6 +20,10 @@ export interface TokenState {
   hardCap: number
 }
 
+export interface ContentState {
+  contentCache: Map<string, string> // fileId -> content
+}
+
 export interface UIPrefsState {
   theme: 'light' | 'dark' | 'system'
   sortOrder: 'name' | 'tokens' | 'modified'
@@ -41,6 +45,9 @@ interface AppState {
   // Token state
   tokenState: TokenState
   
+  // Content state
+  contentState: ContentState
+  
   // UI preferences
   uiPrefsState: UIPrefsState
   
@@ -50,6 +57,7 @@ interface AppState {
   setDrivePickerState: (state: DrivePickerState) => void
   setFileSelectionState: (state: FileSelectionState) => void
   setTokenState: (state: TokenState) => void
+  setContentState: (state: ContentState) => void
   setUIPrefsState: (state: UIPrefsState) => void
   resetState: () => void
 }
@@ -75,6 +83,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     softCap: 750000, // 750k tokens
     hardCap: 1000000 // 1M tokens
   },
+  contentState: {
+    contentCache: new Map()
+  },
   uiPrefsState: {
     theme: 'system',
     sortOrder: 'name',
@@ -87,6 +98,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setDrivePickerState: (state) => set({ drivePickerState: state }),
   setFileSelectionState: (state) => set({ fileSelectionState: state }),
   setTokenState: (state) => set({ tokenState: state }),
+  setContentState: (state) => set({ contentState: state }),
   setUIPrefsState: (state) => set({ uiPrefsState: state }),
   resetState: () => set({
     filesMeta: [],
@@ -106,6 +118,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       totalTokens: 0,
       softCap: 750000,
       hardCap: 1000000
+    },
+    contentState: {
+      contentCache: new Map()
     },
     uiPrefsState: {
       theme: 'system',

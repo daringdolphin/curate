@@ -15,13 +15,21 @@ export default function CuratePageClient() {
     drivePickerState,
     filesMeta,
     filesLoading,
+    tokenState,
+    contentState,
     setDrivePickerState,
     setFilesMeta,
-    setFilesLoading
+    setFilesLoading,
+    setTokenState,
+    setContentState
   } = useAppStore()
   
   // Store access token from drive picker
   const [accessToken, setAccessToken] = useState<string | null>(null)
+  const [scanComplete, setScanComplete] = useState(false)
+  const [processing, setProcessing] = useState(false)
+  const [processedCount, setProcessedCount] = useState(0)
+  const [totalFilesToProcess, setTotalFilesToProcess] = useState(0)
 
   // Environment variables for Google APIs
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_API_KEY
@@ -29,6 +37,123 @@ export default function CuratePageClient() {
 
   // Check if required environment variables are set
   const isConfigured = apiKey && clientId
+
+  const startFileProcessing = useCallback(async (files: FileMeta[], token: string) => {
+    if (files.length === 0) return
+
+    setProcessing(true)
+    setProcessedCount(0)
+    setTotalFilesToProcess(files.length)
+
+    try {
+      console.log(`Starting background processing of ${files.length} files`)
+      
+      const response = await fetch('/api/drive/process', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          files,
+          options: {
+            batchSize: 3,
+            includeContent: true // Include content for caching
+          }
+        })
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+
+      const reader = response.body?.getReader()
+      if (!reader) {
+        throw new Error('Failed to get response reader')
+      }
+
+      const decoder = new TextDecoder()
+      let buffer = ''
+      const updatedFiles = new Map<string, FileMeta>()
+      const newTokenCounts = new Map(tokenState.tokenCounts)
+      const newContentCache = new Map(contentState.contentCache)
+      
+      // Initialize map with current files
+      files.forEach(file => updatedFiles.set(file.id, file))
+
+      while (true) {
+        const { done, value } = await reader.read()
+        
+        if (done) break
+        
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+        
+        for (const line of lines) {
+          if (line.trim()) {
+            try {
+              const result = JSON.parse(line)
+              
+              if (result.type === 'complete') {
+                console.log('Processing complete:', result.message)
+                break
+              }
+              
+              if (result.error) {
+                console.warn('Processing error:', result.error)
+                continue
+              }
+
+              if (result.fileId && result.tokens !== undefined) {
+                // Update the file with token count
+                const existingFile = updatedFiles.get(result.fileId)
+                if (existingFile) {
+                  const updatedFile = { ...existingFile, tokens: result.tokens }
+                  updatedFiles.set(result.fileId, updatedFile)
+                  setProcessedCount(prev => prev + 1)
+                  
+                  // Update token counts
+                  newTokenCounts.set(result.fileId, result.tokens)
+                  
+                  // Cache content if available
+                  if (result.content) {
+                    newContentCache.set(result.fileId, result.content)
+                  }
+                  
+                  // Update the files array in real-time
+                  setFilesMeta(Array.from(updatedFiles.values()))
+                }
+              }
+            } catch (parseError) {
+              console.warn('Failed to parse processing result:', line, parseError)
+            }
+          }
+        }
+      }
+
+      // Update token state with all new counts
+      setTokenState({
+        ...tokenState,
+        tokenCounts: newTokenCounts,
+        totalTokens: Array.from(newTokenCounts.values()).reduce((sum, count) => sum + count, 0)
+      })
+
+      // Update content cache
+      setContentState({
+        contentCache: newContentCache
+      })
+
+      setProcessing(false)
+      const totalTokens = Array.from(updatedFiles.values()).reduce((sum, file) => sum + file.tokens, 0)
+      toast.success(`Processing complete! ${totalTokens.toLocaleString()} total tokens`)
+      
+    } catch (error) {
+      console.error('Error processing files:', error)
+      toast.error('Failed to process files')
+      setProcessing(false)
+    }
+  }, [setFilesMeta, tokenState, contentState, setTokenState, setContentState])
 
   const handleFolderSelected = useCallback(async (folderId: string, folderName: string, token: string) => {
     setDrivePickerState({
@@ -39,13 +164,17 @@ export default function CuratePageClient() {
     })
     
     setAccessToken(token)
+    setScanComplete(false)
+    setProcessing(false)
+    setProcessedCount(0)
+    setTotalFilesToProcess(0)
 
-    // Start scanning the folder
+    // Phase 1: Quick scan to get file metadata
     setFilesLoading(true)
     try {
-      console.log('Scanning folder:', folderId, folderName)
+      console.log('Phase 1: Scanning folder for files...')
       
-      const response = await fetch(`/api/drive/scan?folderId=${encodeURIComponent(folderId)}`, {
+      const response = await fetch(`/api/drive/scan?folderId=${encodeURIComponent(folderId)}&folderName=${encodeURIComponent(folderName)}`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -71,7 +200,7 @@ export default function CuratePageClient() {
         
         buffer += decoder.decode(value, { stream: true })
         const lines = buffer.split('\n')
-        buffer = lines.pop() || '' // Keep the incomplete line in buffer
+        buffer = lines.pop() || ''
         
         for (const line of lines) {
           if (line.trim()) {
@@ -80,13 +209,9 @@ export default function CuratePageClient() {
               if (fileData.error) {
                 throw new Error(fileData.error)
               }
-              // Filter for DOCX, PDF, and Google Docs files only, and check size limit
-              if ((fileData.mimeType === 'application/pdf' || 
-                   fileData.mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-                   fileData.mimeType === 'application/vnd.google-apps.document') &&
-                  fileData.size && fileData.size <= 1048576) { // 1MB limit
-                files.push(fileData)
-              }
+              
+              fileData.tokens = 0 // Initialize with 0 tokens
+              files.push(fileData)
             } catch (parseError) {
               console.warn('Failed to parse line:', line, parseError)
             }
@@ -98,15 +223,11 @@ export default function CuratePageClient() {
       if (buffer.trim()) {
         try {
           const fileData = JSON.parse(buffer.trim())
-          if (!fileData.error && 
-              (fileData.mimeType === 'application/pdf' || 
-               fileData.mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-               fileData.mimeType === 'application/vnd.google-apps.document') &&
-              fileData.size && fileData.size <= 1048576) {
+          if (!fileData.error) {
+            fileData.tokens = 0
             files.push(fileData)
           }
         } catch (parseError) {
-          // Only log if buffer contains substantial content (not just whitespace or partial data)
           if (buffer.trim().length > 10 && buffer.trim().startsWith('{')) {
             console.warn('Failed to parse remaining buffer:', buffer.trim().substring(0, 100) + '...', parseError)
           }
@@ -115,14 +236,21 @@ export default function CuratePageClient() {
 
       setFilesMeta(files)
       setFilesLoading(false)
-      toast.success(`Found ${files.length} files to process`)
+      setScanComplete(true)
+      
+      toast.success(`Found ${files.length} files. Processing tokens in background...`)
+      
+      // Phase 2: Start background processing for tokens
+      if (files.length > 0) {
+        startFileProcessing(files, token)
+      }
       
     } catch (error) {
       console.error('Error scanning folder:', error)
       toast.error('Failed to scan folder')
       setFilesLoading(false)
     }
-  }, [setDrivePickerState, setFilesMeta, setFilesLoading])
+  }, [setDrivePickerState, setFilesMeta, setFilesLoading, startFileProcessing])
 
   const handleReset = useCallback(() => {
     setDrivePickerState({
@@ -133,48 +261,68 @@ export default function CuratePageClient() {
     })
     setFilesMeta([])
     setFilesLoading(false)
-  }, [setDrivePickerState, setFilesMeta, setFilesLoading])
+    setScanComplete(false)
+    setProcessing(false)
+    setProcessedCount(0)
+    setTotalFilesToProcess(0)
+    
+    // Clear token and content caches
+    setTokenState({
+      tokenCounts: new Map(),
+      totalTokens: 0,
+      softCap: 750000,
+      hardCap: 1000000
+    })
+    
+    setContentState({
+      contentCache: new Map()
+    })
+  }, [setDrivePickerState, setFilesMeta, setFilesLoading, setTokenState, setContentState])
 
   if (!isConfigured) {
     return (
-      <Card className="w-full max-w-md mx-auto">
-        <CardHeader className="text-center">
-          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-destructive/10">
-            <AlertTriangle className="h-6 w-6 text-destructive" />
-          </div>
-          <CardTitle>Configuration Required</CardTitle>
-          <CardDescription>
-            Google Drive API credentials are not configured
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="text-sm text-muted-foreground space-y-2">
-            <p>Please set the following environment variables:</p>
-            <ul className="list-disc list-inside space-y-1 font-mono text-xs bg-muted p-3 rounded">
-              <li>NEXT_PUBLIC_GOOGLE_API_KEY</li>
-              <li>NEXT_PUBLIC_GOOGLE_CLIENT_ID</li>
-            </ul>
-          </div>
-        </CardContent>
-      </Card>
+      <div className="flex items-center justify-center h-screen">
+        <Card className="w-full max-w-md mx-auto">
+          <CardHeader className="text-center">
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-destructive/10">
+              <AlertTriangle className="h-6 w-6 text-destructive" />
+            </div>
+            <CardTitle>Configuration Required</CardTitle>
+            <CardDescription>
+              Google Drive API credentials are not configured
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="text-sm text-muted-foreground space-y-2">
+              <p>Please set the following environment variables:</p>
+              <ul className="list-disc list-inside space-y-1 font-mono text-xs bg-muted p-3 rounded">
+                <li>NEXT_PUBLIC_GOOGLE_API_KEY</li>
+                <li>NEXT_PUBLIC_GOOGLE_CLIENT_ID</li>
+              </ul>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     )
   }
 
   // Show folder picker if no folder is selected
   if (!drivePickerState.selectedFolderId) {
     return (
-      <DrivePicker
-        onFolderSelected={handleFolderSelected}
-        apiKey={apiKey}
-        clientId={clientId}
-      />
+      <div className="flex items-center justify-center h-screen">
+        <DrivePicker
+          onFolderSelected={handleFolderSelected}
+          apiKey={apiKey}
+          clientId={clientId}
+        />
+      </div>
     )
   }
 
   // Show loading state while scanning
   if (filesLoading) {
     return (
-      <div className="space-y-6">
+      <div className="flex items-center justify-center h-screen">
         <Card className="w-full max-w-md mx-auto">
           <CardHeader className="text-center">
             <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10">
@@ -182,7 +330,7 @@ export default function CuratePageClient() {
             </div>
             <CardTitle>Scanning Folder</CardTitle>
             <CardDescription>
-              Analyzing "{drivePickerState.folderName}" for DOCX, PDF, and Google Docs files...
+              Finding files in "{drivePickerState.folderName}"...
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -195,51 +343,39 @@ export default function CuratePageClient() {
     )
   }
 
-  // Show results after scanning
+  // Show the main file browser interface with optional processing status
   return (
-    <div className="space-y-6">
-      {/* Header with selected folder info */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-                <FolderOpen className="h-5 w-5 text-primary" />
+    <div className="relative">
+      <FileBrowser files={filesMeta} />
+      
+      {/* Processing Status Overlay */}
+      {processing && (
+        <div className="fixed bottom-4 right-4 z-50">
+          <Card className="w-80">
+            <CardHeader className="pb-2">
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <CardTitle className="text-sm">Processing Files</CardTitle>
               </div>
-              <div>
-                <CardTitle className="text-lg">{drivePickerState.folderName}</CardTitle>
-                <CardDescription>
-                  Found {filesMeta.length} files to process
-                </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>Extracting and tokenizing...</span>
+                  <span>{processedCount} / {totalFilesToProcess}</span>
+                </div>
+                <div className="w-full bg-muted rounded-full h-2">
+                  <div 
+                    className="bg-primary h-2 rounded-full transition-all duration-300"
+                    style={{ 
+                      width: `${totalFilesToProcess > 0 ? (processedCount / totalFilesToProcess) * 100 : 0}%` 
+                    }}
+                  />
+                </div>
               </div>
-            </div>
-            <Button onClick={handleReset} variant="outline">
-              Select Different Folder
-            </Button>
-          </div>
-        </CardHeader>
-      </Card>
-
-      {/* Main file browser with integrated file tree, preview, and token meter */}
-      {filesMeta.length > 0 ? (
-        <div className="h-[calc(100vh-300px)] min-h-[600px]">
-          <FileBrowser files={filesMeta} />
+            </CardContent>
+          </Card>
         </div>
-      ) : (
-        <Card>
-          <CardContent className="flex flex-col items-center justify-center py-12">
-            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-muted">
-              <FileText className="h-6 w-6 text-muted-foreground" />
-            </div>
-            <h3 className="text-lg font-semibold">No Files Found</h3>
-            <p className="text-sm text-muted-foreground mb-4 text-center">
-              No DOCX, PDF, or Google Docs files under 1MB were found in this folder.
-            </p>
-            <Button onClick={handleReset} variant="outline">
-              Select Different Folder
-            </Button>
-          </CardContent>
-        </Card>
       )}
     </div>
   )
